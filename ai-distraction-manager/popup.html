@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Distraction Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-brand">
+      <div class="logo">🧠</div>
+      <div class="header-text">
+        <span class="app-name">AI Distraction Manager</span>
+        <span class="app-version">v1.0</span>
+      </div>
+    </div>
+    <label class="toggle-switch" id="main-toggle-label" title="Enable / Disable extension">
+      <input type="checkbox" id="main-toggle" />
+      <span class="toggle-track">
+        <span class="toggle-thumb"></span>
+      </span>
+    </label>
+  </header>
+
+  <!-- Status Banner -->
+  <div class="status-banner" id="status-banner">
+    <span class="status-dot" id="status-dot"></span>
+    <span class="status-text" id="status-text">Checking status…</span>
+  </div>
+
+  <div class="content">
+
+    <!-- ── Section: Sites ── -->
+    <section class="section">
+      <h2 class="section-title">Distraction Sites</h2>
+      <div class="site-list" id="site-list">
+        <!-- Rendered by JS -->
+      </div>
+      <button class="btn btn-ghost btn-sm" id="add-site-btn">
+        <span class="btn-icon">＋</span> Add site
+      </button>
+
+      <!-- Add site form (hidden by default) -->
+      <div class="add-site-form hidden" id="add-site-form">
+        <input
+          type="url"
+          id="new-site-url"
+          class="input"
+          placeholder="https://example.com"
+          autocomplete="off"
+        />
+        <input
+          type="text"
+          id="new-site-label"
+          class="input"
+          placeholder="Label (optional)"
+        />
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm" id="confirm-add-site">Add</button>
+          <button class="btn btn-ghost btn-sm" id="cancel-add-site">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Divider -->
+    <hr class="divider" />
+
+    <!-- ── Section: Settings ── -->
+    <section class="section">
+      <h2 class="section-title">Settings</h2>
+
+      <!-- Open Delay -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Open delay</span>
+          <span class="setting-desc">Wait before opening tabs</span>
+        </div>
+        <div class="delay-control">
+          <input type="range" id="delay-slider" class="slider" min="0" max="10000" step="500" />
+          <span class="delay-value" id="delay-value">2s</span>
+        </div>
+      </div>
+
+      <!-- Notifications -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Notifications</span>
+          <span class="setting-desc">Alert when tabs close</span>
+        </div>
+        <label class="toggle-switch toggle-sm">
+          <input type="checkbox" id="notif-toggle" />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Divider -->
+    <hr class="divider" />
+
+    <!-- ── Save Button ── -->
+    <button class="btn btn-primary btn-full" id="save-btn">
+      Save Settings
+    </button>
+
+    <div class="save-feedback hidden" id="save-feedback">
+      ✓ Settings saved
+    </div>
+
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span>Made with ☕ for productive sessions</span>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

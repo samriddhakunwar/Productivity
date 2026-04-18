@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a1d27"/>
+      <stop offset="100%" stop-color="#0f1117"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6c63ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="url(#bg)"/>
+  <path d="M64 30 C50 30 38 38 36 50 C30 52 26 58 28 66 C24 70 24 78 30 82 C30 90 36 96 44 96 L64 96"
+        fill="none" stroke="url(#accent)" stroke-width="3.5" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M64 30 C78 30 90 38 92 50 C98 52 102 58 100 66 C104 70 104 78 98 82 C98 90 92 96 84 96 L64 96"
+        fill="none" stroke="url(#accent)" stroke-width="3.5" stroke-linecap="round" filter="url(#glow)"/>
+  <line x1="64" y1="30" x2="64" y2="96" stroke="url(#accent)" stroke-width="2" stroke-dasharray="4,4" opacity="0.6"/>
+  <circle cx="44" cy="54" r="4" fill="#6c63ff" filter="url(#glow)"/>
+  <circle cx="84" cy="54" r="4" fill="#a78bfa" filter="url(#glow)"/>
+  <circle cx="40" cy="70" r="3" fill="#6c63ff" filter="url(#glow)"/>
+  <circle cx="88" cy="70" r="3" fill="#a78bfa" filter="url(#glow)"/>
+  <circle cx="64" cy="63" r="5" fill="url(#accent)" filter="url(#glow)"/>
+  <line x1="44" y1="54" x2="64" y2="63" stroke="rgba(108,99,255,0.5)" stroke-width="1.5"/>
+  <line x1="84" y1="54" x2="64" y2="63" stroke="rgba(167,139,250,0.5)" stroke-width="1.5"/>
+  <path d="M70 14 L62 24 L67 24 L60 36 L74 22 L69 22 Z" fill="#facc15" opacity="0.9" filter="url(#glow)"/>
+</svg>
