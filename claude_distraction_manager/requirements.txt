@@ -1,0 +1,8 @@
+# Claude Distraction Manager — Python Dependencies
+# Install with:  pip install -r requirements.txt
+
+playwright>=1.44.0        # DOM-based Claude state detection (core)
+pygetwindow>=0.0.9        # Window title enumeration (secondary detection)
+keyboard>=0.13.5          # Global hotkey registration
+psutil>=5.9.0             # Process management for clean window closing
+pywin32>=306              # Win32 API access (window placement)
