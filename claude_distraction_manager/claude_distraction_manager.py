@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 Claude AI Distraction Manager - Desktop Automation Script
-Production-Ready v1.1
+Production-Ready v2.0
 
-Detection Method: Playwright persistent-context DOM monitoring
-  - Watches claude.ai for the "Stop generating" button (aria-label).
-  - Polls the live DOM every ~1s — negligible CPU cost.
-  - Far more reliable than OCR or window-title polling.
+Detection Method: Desktop window screenshot + pixel-diff (Antigravity app)
+  - Locates the Antigravity window by partial title match.
+  - Captures only that window's screen region every poll_interval seconds.
+  - Compares consecutive frames: significant pixel change -> generating.
+  - No DOM access, no browser APIs — works with any desktop UI.
 
 Window Management: subprocess + ctypes win32 API
   - Opens a separate browser window per social site.
@@ -27,17 +28,17 @@ from typing import Optional
 import winreg
 
 # ---------------------------------------------------------------------------
-# Third-party imports  (pip install playwright pygetwindow keyboard psutil)
+# Third-party imports  (pip install pygetwindow keyboard psutil pillow)
 # ---------------------------------------------------------------------------
 try:
-    import pygetwindow as gw          # noqa: F401  (kept for optional helpers)
-    from playwright.async_api import async_playwright, Page
+    import pygetwindow as gw          # locate Antigravity window by title
+    from PIL import ImageChops, ImageStat  # pixel-diff between frames
+    import PIL.ImageGrab as ImageGrab  # screen region capture
     import keyboard                   # global hotkey support
     import psutil                     # process tree management
 except ImportError as exc:
     print(f"[ERROR] Missing dependency: {exc}")
-    print("Run:   pip install playwright pygetwindow keyboard psutil")
-    print("Then:  python -m playwright install chromium")
+    print("Run:   pip install pygetwindow keyboard psutil pillow")
     sys.exit(1)
 
 
@@ -47,17 +48,31 @@ except ImportError as exc:
 
 @dataclass
 class Config:
-    # -- Claude interface URL ------------------------------------------------
-    # Use "https://claude.ai" for the web app,
-    # or e.g. "http://localhost:3000" for a local Antigravity instance.
-    claude_url: str = "https://claude.ai"
+    # -- Antigravity window detection ----------------------------------------
+    # Partial title strings used to locate the Antigravity window.
+    # Checked in order; first match wins. Case-insensitive.
+    antigravity_titles: list = None
+
+    def __post_init__(self):
+        if self.antigravity_titles is None:
+            self.antigravity_titles = ["antigravity", "claude"]
 
     # -- Detection tuning ----------------------------------------------------
-    # How often (seconds) to poll the DOM for the stop button.
+    # How often (seconds) to capture and compare window screenshots.
     poll_interval: float = 1.0
 
-    # How long (seconds) to wait after Claude starts generating before
-    # opening windows.  Avoids flicker on very short responses.
+    # Minimum mean pixel difference (0-255) to count as "content changing".
+    # Raise if you get false positives from cursor blink / scrollbar.
+    change_threshold: float = 1.2
+
+    # How many consecutive "changed" polls before we declare "generating".
+    change_streak_required: int = 2
+
+    # How many consecutive "stable" polls before we declare "idle".
+    stable_streak_required: int = 3
+
+    # How long (seconds) to wait after detecting generating before opening
+    # windows.  Avoids flicker on very short responses.
     open_delay: float = 2.5
 
     # -- Social media URLs ---------------------------------------------------
@@ -384,178 +399,221 @@ class SocialWindowManager:
 
 
 # ===========================================================================
-#  CLAUDE STATE DETECTOR  (Playwright DOM polling)
+#  CLAUDE STATE DETECTOR  (Desktop screenshot pixel-diff — Antigravity app)
 # ===========================================================================
 
-# Ordered list of CSS selectors for Claude's "Stop generating" button.
-# Using multiple selectors makes detection resilient to DOM refactors.
-_STOP_SELECTORS: list[str] = [
-    # Primary: aria-label (most stable across Claude versions)
-    'button[aria-label="Stop generating"]',
-    'button[aria-label*="Stop"]',
-    # Secondary: the square SVG icon inside the stop button
-    'button svg rect[width="10"][height="10"]',
-    # Tertiary: data attribute fallback
-    'button[data-value="stop"]',
-    # Heuristic: any SVG rect inside a button (last resort)
-    'button svg[viewBox] rect',
-]
+def _find_antigravity_window(titles: list) -> Optional[object]:
+    """
+    Search all visible top-level windows for one whose title contains any
+    of the given partial strings (case-insensitive).
+    Returns a pygetwindow Window object, or None if not found.
+    """
+    try:
+        all_windows = gw.getAllWindows()
+    except Exception as exc:
+        log.debug("gw.getAllWindows error: %s", exc)
+        return None
 
-# Selector that is present ONLY when Claude is ready for input
-_SEND_SELECTOR = 'button[aria-label="Send message"]'
+    for win in all_windows:
+        title_lower = (win.title or "").lower()
+        for partial in titles:
+            if partial.lower() in title_lower:
+                return win
+    return None
 
-# Selector to detect the login page (so we can prompt user to log in)
-_LOGIN_SELECTOR = 'input[type="email"], button[data-testid="login-button"], a[href*="login"]'
+
+def _capture_window_region(win) -> Optional[object]:
+    """
+    Take a screenshot of the bounding box of `win`.
+    Returns a PIL Image, or None if the window is minimised / off-screen.
+    """
+    try:
+        left   = win.left
+        top    = win.top
+        right  = win.left + win.width
+        bottom = win.top  + win.height
+
+        # Guard against zero-size or minimised windows
+        if win.width < 50 or win.height < 50:
+            return None
+        if right <= 0 or bottom <= 0:
+            return None
+
+        img = ImageGrab.grab(bbox=(left, top, right, bottom))
+        return img
+    except Exception as exc:
+        log.debug("Screenshot error: %s", exc)
+        return None
+
+
+def _mean_pixel_diff(img_a, img_b) -> float:
+    """
+    Return the mean absolute per-channel pixel difference between two
+    same-size PIL Images.  Returns 0.0 if sizes differ or on any error.
+    """
+    try:
+        if img_a.size != img_b.size:
+            return 0.0
+        diff = ImageChops.difference(
+            img_a.convert("RGB"),
+            img_b.convert("RGB"),
+        )
+        stat = ImageStat.Stat(diff)
+        # mean across all channels
+        return sum(stat.mean) / len(stat.mean)
+    except Exception:
+        return 0.0
 
 
 class ClaudeStateDetector:
     """
-    Opens a persistent Playwright Chromium window on Claude.ai.
-    Polls the DOM every `poll_interval` seconds for the stop button.
+    Monitors the Antigravity desktop window using screenshot-based pixel
+    diffing.  No DOM or browser API access required.
 
     State machine:
-        "generating"  ->  stop button is visible
-        "idle"        ->  stop button gone (send button may be present)
-        "unknown"     ->  page not loaded / navigating / error
+        "generating"  ->  window content is continuously changing
+                          (change_streak_required consecutive changed polls)
+        "idle"        ->  window content has been stable
+                          (stable_streak_required consecutive stable polls)
+        "unknown"     ->  window not found / minimised
     """
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self._pw = None
-        self._page: Optional[Page] = None
         self._running: bool = False
+        self._prev_frame = None          # last PIL Image capture
+        self._change_streak: int = 0     # consecutive "changed" polls
+        self._stable_streak: int = 0     # consecutive "stable" polls
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # Lifecycle  (kept async for drop-in compatibility with orchestrator)
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Launch the monitoring browser and navigate to Claude."""
-        log.info("Starting detector -> %s", self.cfg.claude_url)
-        self._pw = await async_playwright().start()
-
-        # Persistent context = Claude login session survives restarts
-        profile_dir = os.path.join(
-            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
-            "DistractionManager", "pw-profile"
-        )
-        os.makedirs(profile_dir, exist_ok=True)
-
-        ctx = await self._pw.chromium.launch_persistent_context(
-            profile_dir,
-            headless=False,                     # Must be visible for login
-            args=[
-                "--no-first-run",
-                "--disable-blink-features=AutomationControlled",
-            ],
-            no_viewport=True,                   # Use the OS window size
-        )
-
-        self._page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        """Locate the Antigravity window and begin monitoring."""
         self._running = True
+        titles = self.cfg.antigravity_titles
+        log.info("Detector started — looking for window matching: %s", titles)
 
-        log.info("Navigating to Claude ...")
-        try:
-            await self._page.goto(
-                self.cfg.claude_url,
-                wait_until="domcontentloaded",
-                timeout=30_000,
-            )
-        except Exception as exc:
-            log.warning("Navigation note: %s", exc)
+        # Wait up to 30 s for the window to appear
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            win = _find_antigravity_window(titles)
+            if win:
+                log.info("Antigravity window found: '%s'", win.title)
+                return
+            log.info("Antigravity window not found — retrying in 3 s ...")
+            await asyncio.sleep(3)
 
-        await self._prompt_login_if_needed()
+        log.warning(
+            "Antigravity window still not found after 30 s.\n"
+            "  Make sure the app is running.  Detection will continue "
+            "and pick it up when it appears."
+        )
 
     async def stop(self) -> None:
         self._running = False
-        if self._pw:
-            try:
-                await self._pw.stop()
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
-    # Login detection
-    # ------------------------------------------------------------------
-
-    async def _prompt_login_if_needed(self) -> None:
-        """If Claude's login page is shown, wait for the user to log in."""
-        try:
-            el = await self._page.query_selector(_LOGIN_SELECTOR)
-            if el:
-                log.info("")
-                log.info("=" * 60)
-                log.info("  ACTION REQUIRED: Please log into Claude in the")
-                log.info("  browser window that just opened, then come back.")
-                log.info("  The script will start monitoring automatically.")
-                log.info("=" * 60)
-                log.info("")
-                # Wait until the login element disappears (user logged in)
-                await self._page.wait_for_selector(
-                    _LOGIN_SELECTOR,
-                    state="hidden",
-                    timeout=300_000,   # 5-minute login window
-                )
-                log.info("Login detected — monitoring started.")
-        except Exception:
-            pass  # Best-effort; non-critical
-
-    # ------------------------------------------------------------------
-    # Polling
+    # Single-poll detection
     # ------------------------------------------------------------------
 
     async def poll_state(self) -> str:
-        """Return 'generating', 'idle', or 'unknown'."""
-        if self._page is None:
-            return "unknown"
-        try:
-            for selector in _STOP_SELECTORS:
-                el = await self._page.query_selector(selector)
-                if el and await el.is_visible():
-                    return "generating"
-            return "idle"
-        except Exception as exc:
-            log.debug("Poll error: %s", exc)
+        """
+        Capture the Antigravity window and compare with the previous frame.
+        Updates change/stable streak counters and returns the current state.
+        """
+        titles = self.cfg.antigravity_titles
+        win = _find_antigravity_window(titles)
+
+        if win is None:
+            log.debug("Antigravity window not found.")
+            self._prev_frame = None
+            self._change_streak = 0
+            self._stable_streak = 0
             return "unknown"
 
+        frame = await asyncio.get_running_loop().run_in_executor(
+            None, _capture_window_region, win
+        )
+
+        if frame is None:
+            # Window exists but is minimised / zero-size
+            log.debug("Window minimised or zero-size — skipping frame.")
+            self._prev_frame = None
+            return "unknown"
+
+        if self._prev_frame is None:
+            # First frame — nothing to compare yet
+            self._prev_frame = frame
+            return "unknown"
+
+        diff = await asyncio.get_running_loop().run_in_executor(
+            None, _mean_pixel_diff, self._prev_frame, frame
+        )
+        self._prev_frame = frame
+
+        log.debug("Pixel diff: %.3f  (threshold %.3f)",
+                  diff, self.cfg.change_threshold)
+
+        if diff >= self.cfg.change_threshold:
+            self._change_streak += 1
+            self._stable_streak = 0
+        else:
+            self._stable_streak += 1
+            self._change_streak = 0
+
+        if self._change_streak >= self.cfg.change_streak_required:
+            return "generating"
+        if self._stable_streak >= self.cfg.stable_streak_required:
+            return "idle"
+        # Not yet enough evidence either way
+        return "unknown"
+
     # ------------------------------------------------------------------
-    # Main loop
+    # Main detection loop  (identical contract to the old Playwright loop)
     # ------------------------------------------------------------------
 
     async def run_detection_loop(self, on_generating, on_idle) -> None:
         """
-        Poll Claude's state and fire callbacks on transitions.
+        Poll window content and fire callbacks on state transitions.
 
         `on_generating` and `on_idle` are regular (synchronous) callables
         executed in a thread-pool executor to avoid blocking the event loop.
         """
         prev_state = "unknown"
-        loop = asyncio.get_running_loop()   # 3.10+ recommended API
+        generating_task: Optional[asyncio.Task] = None
+        loop = asyncio.get_running_loop()
 
         while self._running:
             await asyncio.sleep(self.cfg.poll_interval)
 
             state = await self.poll_state()
 
-            if state == prev_state:
+            if state == prev_state or state == "unknown":
                 continue
 
             log.info("Claude state: %s -> %s", prev_state, state)
             prev_state = state
 
             if state == "generating":
-                # Capture cfg reference to avoid closure issue
                 delay = self.cfg.open_delay
 
                 async def _delayed_open(d=delay):
                     await asyncio.sleep(d)
-                    # Re-confirm still generating after delay
-                    if await self.poll_state() == "generating":
+                    # Re-confirm still generating after the open delay
+                    confirm = await self.poll_state()
+                    if confirm == "generating":
                         await loop.run_in_executor(None, on_generating)
 
-                asyncio.create_task(_delayed_open())
+                # Cancel any pending open task before creating a new one
+                if generating_task and not generating_task.done():
+                    generating_task.cancel()
+                generating_task = asyncio.create_task(_delayed_open())
 
             elif state == "idle":
+                if generating_task and not generating_task.done():
+                    generating_task.cancel()
                 await loop.run_in_executor(None, on_idle)
 
 
@@ -618,7 +676,8 @@ class DistractionManager:
 
     async def run(self) -> None:
         log.info("=" * 60)
-        log.info("  Claude AI Distraction Manager  v1.1")
+        log.info("  Claude AI Distraction Manager  v2.0  (Antigravity mode)")
+        log.info("  Window : %s", self.cfg.antigravity_titles)
         log.info("  Toggle : %s", self.cfg.toggle_hotkey)
         log.info("  Log    : %s", os.path.abspath(self.cfg.log_file))
         log.info("=" * 60)
